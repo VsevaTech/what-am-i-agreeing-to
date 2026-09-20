@@ -1,0 +1,93 @@
+{% set doc = result.document %}
+<section class="result-header">
+  <h2>Agreement card</h2>
+  <p class="muted">
+    {% if doc.filename %}<span class="filename">{{ doc.filename }}</span> &middot; {% endif %}
+    {{ doc.page_count }} page{{ '' if doc.page_count == 1 else 's' }} extracted
+    {% if doc.source_kind == 'text' %}(pasted text){% endif %}
+  </p>
+</section>
+
+{% if not result.ok %}
+  <div class="card ai-unavailable">
+    <h3>AI analysis is currently unavailable.</h3>
+    <p>The document was extracted successfully, but automated term analysis could not be completed.</p>
+    <p class="muted">You can still read the extracted text below.</p>
+    <details>
+      <summary>Show extracted text ({{ doc.page_count }} page{{ '' if doc.page_count == 1 else 's' }})</summary>
+      {% for page in doc.pages %}
+        <h4 class="page-heading">Page {{ page.number }}</h4>
+        <pre class="page-text">{{ page.text }}</pre>
+      {% endfor %}
+    </details>
+  </div>
+{% else %}
+  {% set analysis = result.analysis %}
+  <div class="cards">
+    {% for category, label, finding in analysis.items() %}
+      <article class="card finding status-{{ finding.status.value|lower }}">
+        <header class="finding-header">
+          <h3>{{ label }}</h3>
+          <span class="badge badge-{{ finding.status.value|lower }}">
+            {% if finding.status == Status.FOUND %}&#10003; Found
+            {% elif finding.status == Status.UNCLEAR %}? Unclear
+            {% else %}&ndash; Not found{% endif %}
+          </span>
+        </header>
+
+        {% if finding.status == Status.FOUND %}
+          <p class="summary">{{ finding.summary }}</p>
+          <blockquote class="evidence">&ldquo;{{ finding.evidence }}&rdquo;</blockquote>
+          <div class="finding-footer">
+            <span class="muted">Source: page {{ finding.page }}</span>
+            <button type="button" class="btn small"
+                    hx-get="/source/{{ token }}/{{ category }}"
+                    hx-target="#source-body"
+                    hx-swap="innerHTML">View source</button>
+          </div>
+        {% elif finding.status == Status.UNCLEAR %}
+          {% if finding.summary %}<p class="summary">{{ finding.summary }}</p>{% endif %}
+          {% if finding.evidence %}
+            <blockquote class="evidence">&ldquo;{{ finding.evidence }}&rdquo;</blockquote>
+            <div class="finding-footer">
+              <span class="muted">Source: page {{ finding.page }} &middot; needs confirmation</span>
+              <button type="button" class="btn small"
+                      hx-get="/source/{{ token }}/{{ category }}"
+                      hx-target="#source-body"
+                      hx-swap="innerHTML">View source</button>
+            </div>
+          {% elif not finding.note %}
+            <p class="muted">Needs confirmation &mdash; the document does not state this clearly enough to quote.</p>
+          {% endif %}
+          {% if finding.note %}<p class="note">{{ finding.note }}</p>{% endif %}
+        {% else %}
+          <p class="muted">Not found in this document.</p>
+          {% if finding.note %}<p class="note">{{ finding.note }}</p>{% endif %}
+        {% endif %}
+      </article>
+    {% endfor %}
+  </div>
+
+  {% set unresolved = analysis.unresolved() %}
+  <section class="card unresolved">
+    <h3>Unclear / not found</h3>
+    {% if unresolved %}
+      <ul>
+        {% for category, label, finding in unresolved %}
+          <li>
+            <strong>{{ label }}:</strong>
+            {% if finding.status == Status.NOT_FOUND %}
+              could not be found in this document.
+            {% else %}
+              could not be determined with confidence.
+              {% if finding.note %}<span class="muted">{{ finding.note }}</span>{% endif %}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="muted">Check these terms directly in the original agreement before you agree.</p>
+    {% else %}
+      <p class="muted">All five categories were located with supporting quotes. Still, verify anything important against the original document.</p>
+    {% endif %}
+  </section>
+{% endif %}

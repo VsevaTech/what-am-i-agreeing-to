@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>What Am I Agreeing To?</h1>
+  <p class="lead">Understand the practical terms before you click Agree.</p>
+  <p class="muted">Upload a text-based PDF or paste the agreement. You get five plain-language findings, each linked to the exact sentence in the document that supports it.</p>
+</section>
+
+<form id="analyze-form"
+      class="card form-card"
+      hx-post="/analyze"
+      hx-target="#result"
+      hx-swap="innerHTML"
+      hx-encoding="multipart/form-data"
+      hx-indicator="#spinner"
+      enctype="multipart/form-data"
+      method="post"
+      action="/analyze">
+
+  <div class="tabs" role="tablist">
+    <button type="button" class="tab active" data-tab="upload" role="tab">Upload PDF</button>
+    <span class="tab-or">or</span>
+    <button type="button" class="tab" data-tab="paste" role="tab">Paste agreement text</button>
+  </div>
+
+  <div class="tab-panel" data-panel="upload">
+    <label class="file-drop" for="file">
+      <input id="file" name="file" type="file" accept="application/pdf,.pdf">
+      <span class="file-drop-text">Choose a PDF (text-based, up to {{ max_upload_mb }} MB). Scanned PDFs are not supported.</span>
+      <span id="file-name" class="file-name"></span>
+    </label>
+  </div>
+
+  <div class="tab-panel" data-panel="paste" hidden>
+    <textarea id="text" name="text" rows="12" placeholder="Paste the full text of the agreement here..."></textarea>
+  </div>
+
+  <div class="notice">
+    <strong>Before you continue:</strong> {{ privacy_notice }}
+    {% if not ai_configured %}
+      <br><span class="warn">AI analysis is not configured on this server (no GEMINI_API_KEY). Text extraction will still work.</span>
+    {% endif %}
+  </div>
+
+  <div class="actions">
+    <button type="submit" class="btn primary">Analyze</button>
+    <span id="spinner" class="htmx-indicator">Analyzing… this usually takes a few seconds.</span>
+  </div>
+</form>
+
+<div id="result" class="result"></div>
+
+<script>
+  (function () {
+    var tabs = document.querySelectorAll('.tab');
+    var panels = document.querySelectorAll('.tab-panel');
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () {
+        tabs.forEach(function (x) { x.classList.remove('active'); });
+        t.classList.add('active');
+        panels.forEach(function (p) { p.hidden = p.dataset.panel !== t.dataset.tab; });
+        if (t.dataset.tab === 'upload') { document.getElementById('text').value = ''; }
+        else { document.getElementById('file').value = ''; document.getElementById('file-name').textContent = ''; }
+      });
+    });
+    document.getElementById('file').addEventListener('change', function (e) {
+      var f = e.target.files[0];
+      document.getElementById('file-name').textContent = f ? f.name : '';
+    });
+  })();
+</script>
+{% endblock %}

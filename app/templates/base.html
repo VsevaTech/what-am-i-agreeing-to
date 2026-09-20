@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}What Am I Agreeing To?{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/">What Am I Agreeing To?</a>
+    <span class="tagline">Understand the practical terms before you click Agree.</span>
+  </header>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <p class="disclaimer">{{ disclaimer }}</p>
+    <p class="muted">Findings are extracted from the document you provide and verified against its text. Nothing is stored after your session.</p>
+  </footer>
+
+  <div id="source-modal" class="modal" hidden>
+    <div class="modal-backdrop" onclick="closeSource()"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="source-title">
+      <button class="modal-close" type="button" onclick="closeSource()" aria-label="Close">&times;</button>
+      <div id="source-body"></div>
+    </div>
+  </div>
+
+  <script>
+    function openSource() {
+      var m = document.getElementById('source-modal');
+      m.hidden = false;
+      document.body.classList.add('modal-open');
+    }
+    function closeSource() {
+      var m = document.getElementById('source-modal');
+      m.hidden = true;
+      document.body.classList.remove('modal-open');
+      document.getElementById('source-body').innerHTML = '';
+    }
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeSource(); });
+    document.addEventListener('htmx:afterSwap', function (e) {
+      if (e.detail.target && e.detail.target.id === 'source-body') {
+        openSource();
+        var mark = e.detail.target.querySelector('mark');
+        if (mark) { mark.scrollIntoView({ block: 'center' }); }
+      }
+    });
+    document.addEventListener('htmx:responseError', function (e) {
+      if (e.detail.target && e.detail.target.id === 'source-body') {
+        e.detail.target.innerHTML = '<p class="error-text">The source view is no longer available. Please re-run the analysis.</p>';
+        openSource();
+      }
+    });
+  </script>
+</body>
+</html>
