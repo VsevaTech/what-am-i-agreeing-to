@@ -1,0 +1,58 @@
+name: Regenerate demo assets
+
+# Rebuilds the synthetic demo PDFs, the vendored htmx bundle and the README screenshots from
+# source, and commits them if anything changed. No API key is involved: the screenshots use the
+# deterministic stub provider in scripts/capture_screenshots.py.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - examples/build_examples.py
+      - scripts/capture_screenshots.py
+      - .github/workflows/assets.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: demo-assets
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          pip install -e ".[dev]" playwright
+          python -m playwright install --with-deps chromium
+      - name: Vendor htmx (if missing)
+        run: |
+          if [ ! -s app/static/htmx.min.js ]; then
+            npm pack htmx.org@2.0.4 --silent
+            tar xzf htmx.org-2.0.4.tgz package/dist/htmx.min.js
+            mv package/dist/htmx.min.js app/static/htmx.min.js
+            rm -rf package htmx.org-2.0.4.tgz
+          fi
+      - name: Build demo PDFs
+        run: python examples/build_examples.py
+      - name: Capture screenshots
+        run: python scripts/capture_screenshots.py docs/screenshots
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add examples/*.pdf app/static/htmx.min.js docs/screenshots/*.png
+          if git diff --cached --quiet; then
+            echo "Assets unchanged."
+          else
+            git commit -m "Regenerate demo assets"
+            git push
+          fi
