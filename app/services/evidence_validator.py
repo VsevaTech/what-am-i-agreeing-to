@@ -3,6 +3,11 @@
 The AI is not the source of truth; the uploaded document is. Every FOUND finding must cite a
 quote that really exists on the cited page (after whitespace / punctuation normalisation).
 Anything else is downgraded to UNCLEAR and the quote is discarded.
+
+Validation runs against the *analyzed* document - exactly the text the AI was given - so a
+quote from a page (or part of a page) that was never sent cannot be confirmed. When the
+analysis was partial, NOT_FOUND is not a conclusion the application can stand behind: the term
+may sit in the unread part, so it is reported as UNCLEAR instead.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ from app.models.agreement import (
     VerifiedAnalysis,
     VerifiedFinding,
 )
-from app.models.document import ExtractedDocument
+from app.models.document import Coverage, ExtractedDocument
 
 MAX_EVIDENCE_CHARS = 600
 
@@ -79,7 +84,22 @@ def contains_advice(text: str | None) -> bool:
     return bool(text and _ADVICE_PATTERNS.search(text))
 
 
-def verify_finding(finding: Finding, document: ExtractedDocument) -> VerifiedFinding:
+def partial_not_found_note(coverage: Coverage) -> str:
+    return (
+        "This term was not found in the analyzed portion of the document. "
+        f"The document was only partially analyzed ({coverage.reviewed_label()}), "
+        "so it may appear in the part that was not reviewed."
+    )
+
+
+def verify_finding(
+    finding: Finding, document: ExtractedDocument, coverage: Coverage | None = None
+) -> VerifiedFinding:
+    """Validate one finding against `document` - the text that was actually analyzed.
+
+    `coverage` (optional) describes how that text relates to the full upload; it only refines
+    the explanation shown when a cited page lies outside the analyzed range.
+    """
     verified = VerifiedFinding(**finding.model_dump())
 
     if contains_advice(verified.summary):
@@ -111,6 +131,18 @@ def verify_finding(finding: Finding, document: ExtractedDocument) -> VerifiedFin
 
     page = document.page(verified.page) if verified.page is not None else None
     if page is None:
+        if (
+            coverage is not None
+            and coverage.partial
+            and verified.page is not None
+            and verified.page <= coverage.total_pages
+        ):
+            return _reject(
+                verified,
+                f"The AI cited page {verified.page}, which was not part of the analyzed "
+                f"portion (pages 1–{coverage.last_analyzed_page}), so this finding could "
+                "not be confirmed.",
+            )
         return _reject(verified, "The cited page does not exist in the document.")
 
     if not evidence_exists(page.text, evidence):
@@ -136,5 +168,32 @@ def _reject(verified: VerifiedFinding, note: str) -> VerifiedFinding:
     return verified
 
 
-def verify_analysis(analysis: AgreementAnalysis, document: ExtractedDocument) -> VerifiedAnalysis:
-    return VerifiedAnalysis(**{c: verify_finding(analysis.get(c), document) for c in CATEGORIES})
+def apply_coverage(finding: VerifiedFinding, coverage: Coverage | None) -> VerifiedFinding:
+    """Partial analysis + NOT_FOUND -> UNCLEAR. FOUND and UNCLEAR are left untouched."""
+    if coverage is None or not coverage.partial or finding.status is not Status.NOT_FOUND:
+        return finding
+    finding.status = Status.UNCLEAR
+    finding.summary = ""
+    finding.evidence = None
+    finding.page = None
+    finding.evidence_verified = False
+    finding.note = partial_not_found_note(coverage)
+    return finding
+
+
+def verify_analysis(
+    analysis: AgreementAnalysis,
+    document: ExtractedDocument,
+    coverage: Coverage | None = None,
+) -> VerifiedAnalysis:
+    """Validate every category against the analyzed text, then apply the coverage rule.
+
+    `document` must be the analyzed document (see `ExtractedDocument.select_for_ai`). With no
+    `coverage` the document is treated as fully analyzed.
+    """
+    return VerifiedAnalysis(
+        **{
+            c: apply_coverage(verify_finding(analysis.get(c), document, coverage), coverage)
+            for c in CATEGORIES
+        }
+    )
