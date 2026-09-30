@@ -8,6 +8,33 @@
   </p>
 </section>
 
+{% set coverage = result.coverage %}
+{% if result.ok and coverage %}
+  {% if coverage.partial %}
+    <div class="coverage coverage-partial" role="status">
+      <strong>&#9888; Partial analysis</strong>
+      <span>{{ coverage.summary() }}</span>
+      <span class="muted">This document exceeds the AI input limit ({{ '{:,}'.format(coverage.analyzed_chars) }} of {{ '{:,}'.format(coverage.total_chars) }} characters reviewed). Terms not found in the reviewed part are shown as Unclear, not Not found.</span>
+    </div>
+  {% else %}
+    <div class="coverage coverage-full">
+      <strong>&#10003; Full document analyzed</strong>
+      <span class="muted">{{ coverage.summary() }}</span>
+    </div>
+  {% endif %}
+{% endif %}
+
+<div class="retention">
+  <span class="muted">Kept in server memory only. Automatically deleted after {{ retention_minutes }} minutes.</span>
+  <details class="delete-confirm">
+    <summary class="btn small danger">Delete analysis now</summary>
+    <form method="post" action="/results/{{ token }}/delete" class="delete-form">
+      <span>This removes the document text, findings and quotes from the server.</span>
+      <button type="submit" class="btn small danger">Yes, delete now</button>
+    </form>
+  </details>
+</div>
+
 {% if not result.ok %}
   <div class="card ai-unavailable">
     <h3>AI analysis is currently unavailable.</h3>

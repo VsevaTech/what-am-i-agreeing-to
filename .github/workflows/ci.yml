@@ -1,9 +1,20 @@
 name: CI
 
+# Runs on every push to main, on pull requests, on manual dispatch, and when the "Regenerate
+# demo assets" workflow dispatches it after committing regenerated files (commits pushed with
+# GITHUB_TOKEN do not trigger `push` workflows, so that workflow triggers CI explicitly).
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint-and-test:
@@ -21,10 +32,9 @@ jobs:
       - name: Ruff (format)
         run: ruff format --check .
       - name: Demo documents are reproducible
-        run: |
-          md5sum examples/*.pdf > /tmp/before.md5
-          python examples/build_examples.py
-          md5sum -c /tmp/before.md5
+        # Regenerate from source, then let Git tell us whether the tracked files changed.
+        # No hand-maintained checksum list: the generator itself is the source of truth.
+        run: python scripts/check_examples.py
       - name: Tests (no Gemini API key needed)
         env:
           GEMINI_API_KEY: ""
@@ -40,10 +50,11 @@ jobs:
       - name: Smoke test container
         run: |
           docker run -d --name waiat -p 8000:8000 what-am-i-agreeing-to:ci
+          trap 'docker rm -f waiat >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:8000/health; then ok=1; break; fi
             sleep 1
           done
           [ "${ok:-0}" = "1" ] || (docker logs waiat; exit 1)
-          curl -fsS -o /dev/null -F "file=@examples/simple-subscription.pdf" http://127.0.0.1:8000/analyze
-          docker rm -f waiat
+          echo
+          bash scripts/smoke.sh http://127.0.0.1:8000

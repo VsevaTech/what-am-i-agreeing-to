@@ -107,7 +107,14 @@ def test_too_many_pages_rejected(simple_pdf_bytes):
 
 
 @pytest.mark.parametrize(
-    "name", ["simple-subscription.pdf", "ambiguous-agreement.pdf", "no-renewal-agreement.pdf"]
+    "name",
+    [
+        "simple-subscription.pdf",
+        "ambiguous-agreement.pdf",
+        "no-renewal-agreement.pdf",
+        "no-cancellation-terms.pdf",
+        "long-subscriber-agreement.pdf",
+    ],
 )
 def test_all_demo_documents_extract(name):
     doc = ex.extract_pdf((EXAMPLES / name).read_bytes())

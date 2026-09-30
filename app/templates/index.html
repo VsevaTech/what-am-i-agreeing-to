@@ -1,5 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
+{% if deleted == '1' %}
+  <div class="card deleted-card" role="status">
+    <h3>Analysis deleted</h3>
+    <p class="muted">The document text, pages, findings and quotes were removed from the server. The old result and source links no longer work.</p>
+  </div>
+{% elif deleted == '0' %}
+  <div class="card deleted-card" role="status">
+    <h3>Analysis deleted</h3>
+    <p class="muted">This analysis had already been deleted or had expired. Nothing about it is kept on the server.</p>
+  </div>
+{% endif %}
 <section class="hero">
   <h1>What Am I Agreeing To?</h1>
   <p class="lead">Understand the practical terms before you click Agree.</p>

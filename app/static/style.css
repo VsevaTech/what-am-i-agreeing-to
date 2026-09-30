@@ -142,3 +142,26 @@ mark { background: var(--mark); padding: 0 0.15rem; border-radius: 3px; font-wei
 }
 .source-header h3 { margin: 0 0 0.25rem; }
 .source-text { max-height: 65vh; }
+
+/* Analysis coverage (full vs partial) */
+.coverage {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem;
+  margin: 0.75rem 0; padding: 0.6rem 0.9rem; border-radius: 10px; font-size: 0.95rem;
+}
+.coverage .muted { flex-basis: 100%; font-size: 0.88rem; }
+.coverage-full { background: var(--found-soft); color: var(--found); }
+.coverage-full .muted { flex-basis: auto; }
+.coverage-partial { background: var(--unclear-soft); color: #6b4a00; border-left: 4px solid var(--unclear); }
+
+/* Retention + delete */
+.retention {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 0.5rem; margin: 0.5rem 0 1rem; font-size: 0.9rem;
+}
+.delete-confirm summary { list-style: none; display: inline-block; }
+.delete-confirm summary::-webkit-details-marker { display: none; }
+.delete-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
+.btn.danger { color: #a3261b; border-color: #e7c2bd; }
+.btn.danger[type="submit"] { background: #a3261b; border-color: #a3261b; color: #fff; }
+.deleted-card { border-left: 5px solid var(--found); }
+.deleted-card h3 { margin: 0 0 0.25rem; }

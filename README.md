@@ -51,8 +51,12 @@ answers only the practical questions, only from the document, and shows its work
   alternative. Scanned PDFs are detected and rejected with a clear message - no unreliable OCR.
 - **Graceful AI failure.** Missing key, quota exhausted, timeout, provider outage or a
   malformed response never crash the app; the extracted text is still shown.
+- **Honest coverage.** Every result says whether the *full document* was analyzed or only a
+  part of it ("Reviewed pages 1–37 of 52"). A term that was not found in a partially analyzed
+  document is reported as `UNCLEAR`, never `NOT_FOUND`.
 - **Privacy first.** External-AI notice before upload; document text is never logged; nothing
-  is persisted - results live in memory for 30 minutes so the source viewer can work.
+  is persisted - results live in memory for 30 minutes so the source viewer can work, and
+  **Delete analysis now** removes them immediately.
 - **Swappable AI layer** (`app/services/ai/`): the Gemini provider is one implementation of a
   small protocol.
 
@@ -124,11 +128,13 @@ extracted pages ──► Gemini (structured JSON) ──► AgreementAnalysis
                           for each of the 5 findings   ▼
                           ┌──────────────────────────────────────────┐
                           │ status == FOUND but no evidence?  → UNCLEAR│
-                          │ page number not in document?      → UNCLEAR│
+                          │ page not in the analyzed range?    → UNCLEAR│
                           │ quote not on that page (normalised)? → UNCLEAR│
                           │ quote longer than 600 chars?       → UNCLEAR│
                           │ summary contains advice?  → summary removed│
                           └──────────────────────────────────────────┘
+                                                      │
+                          partial analysis and NOT_FOUND?  → UNCLEAR
                                                       │
                                                       ▼
                                              VerifiedAnalysis → UI
@@ -144,15 +150,65 @@ The critical test in `tests/test_evidence_validator.py` feeds the validator an A
 claims *"Cancellation requires 30 days notice."* with an identical "quote" that does not exist
 in the document. Expected: evidence rejected, status `UNCLEAR`, claim never displayed as fact.
 
-## Privacy
+## Large documents
+
+The whole document goes to the AI in one call, bounded by `MAX_AI_CHARS` (default 200,000
+characters of prompt text). **When a document exceeds the configured AI input limit, the UI shows
+exactly how much was analyzed. Terms not found in the analyzed portion are reported as UNCLEAR
+rather than NOT_FOUND.**
+
+How it works (`ExtractedDocument.select_for_ai`, `app/services/analysis.py`):
+
+- The application - never the model - decides coverage. Whole pages are added in order while
+  the prompt stays within the limit; the first page that would overflow and every page after it
+  are left out. Pages are not cut in the middle. Only when a single page is larger than the limit
+  (typically pasted plain text without page breaks) is that page cut, at a word boundary.
+- The result carries `Coverage`: `total_pages`, `analyzed_pages`, `total_chars`,
+  `analyzed_chars`, and `partial`.
+- The UI shows either **✓ Full document analyzed** or **⚠ Partial analysis - Reviewed pages
+  1–37 of 52. The remaining pages were not analyzed.**
+- Rules applied after evidence validation:
+
+  | Coverage | AI says | Shown as |
+  | --- | --- | --- |
+  | full | `NOT_FOUND` | `NOT_FOUND` |
+  | partial | `NOT_FOUND` | `UNCLEAR` - *not found in the analyzed portion of the document* |
+  | partial | `FOUND` with a verified quote from pages 1–37 | `FOUND` |
+  | partial | `FOUND` citing page 48 (not sent to the AI) | `UNCLEAR` - quote rejected |
+
+- Evidence is validated against exactly the text that was sent to the AI, so a quote from a page
+  (or the unread part of a page) the model never saw cannot be confirmed - even if it happens to
+  exist in the upload.
+
+The tool therefore does **not** claim to have reviewed a document it only partly read. There is
+no chunking, multi-pass analysis or retrieval: if the important clause is beyond the limit, you
+are told to check the rest yourself.
+
+## Privacy / retention
 
 - Before analysis the page states: *Document text will be sent to an external AI provider
   (Google Gemini) for analysis.*
-- The application logs only document kind, page count, character count and whether AI
-  succeeded - never the document, the extracted text or the API key.
-- No database. Analysed documents are held in process memory for `RESULT_TTL_SECONDS`
-  (default 30 minutes) so *View source* can work, then dropped.
+- The application logs only document kind, page / character counts (total and analyzed) and
+  whether AI succeeded - never the document, the extracted text, result tokens or the API key.
+- No database, nothing written to disk. Each analysis (extracted text, pages, findings, quotes,
+  metadata) is one object in the in-memory `ResultStore`, kept for `RESULT_TTL_SECONDS`
+  (default 30 minutes) so *View source* and the result URL (`/results/{token}`) work, then
+  dropped automatically.
+- Responses that contain a result or document text (`/analyze`, `/results/…`, `/source/…`) are
+  sent with `Cache-Control: no-store, private`, so the browser does not keep them in its cache.
+  Static assets are cached normally.
 - All bundled demo documents are synthetic. Do not commit real agreements.
+
+### Delete analysis now
+
+Every result page has a **Delete analysis now** button (with a one-click confirmation). It sends
+`POST /results/{token}/delete`, which removes the whole analysis from the store and redirects to
+the start page with an *Analysis deleted* confirmation. Afterwards the old result URL and every
+*View source* link return 404. Deleting an analysis that was already deleted or has expired is
+safe. Deletion never happens on `GET`.
+
+Note: this removes the server's copy. Text already sent to the AI provider for analysis is
+subject to that provider's own data policy.
 
 ## Architecture
 
@@ -162,12 +218,12 @@ app/
 ├── config.py                   pydantic-settings; env vars only
 ├── models/
 │   ├── agreement.py            Status, Finding, AgreementAnalysis (AI schema), VerifiedAnalysis
-│   └── document.py             Page, ExtractedDocument (page markers for the prompt)
+│   └── document.py             Page, ExtractedDocument, Coverage (AI input selection)
 ├── services/
 │   ├── document_extractor.py   PDF (pdfplumber) / plain text → pages; error taxonomy
 │   ├── evidence_validator.py   deterministic quote verification + highlight spans
 │   ├── analysis.py             extract → AI → validate orchestration; never raises on AI errors
-│   ├── result_store.py         in-memory TTL store for the source viewer
+│   ├── result_store.py         in-memory TTL store (+ delete) for result / source views
 │   └── ai/
 │       ├── base.py             AIProvider protocol, error classes, extraction-only system prompt
 │       ├── gemini.py           Gemini structured-output implementation
@@ -176,24 +232,41 @@ app/
 └── static/                     style.css, vendored htmx
 tests/                          pytest, no network, Gemini SDK client mocked
 examples/                       synthetic demo PDFs + build_examples.py (reproducible)
+scripts/                        check_examples.py (CI asset check), smoke.sh (E2E),
+                                demo_partial.py (coverage + delete demo), screenshots
 ```
 
 Stack: Python 3.12, FastAPI, Pydantic v2, Jinja2, HTMX, pdfplumber, google-genai, pytest,
 ruff, Docker. Deliberately absent: React, databases, queues, auth, vector stores, RAG
-frameworks - a 30-page agreement fits in one structured LLM call.
+frameworks - a typical agreement fits in one structured LLM call, and a longer one is reported
+as partially analyzed instead of silently truncated.
 
 ## Tests
 
 ```bash
-pytest -q          # 69 tests, no API key needed
+pytest -q                         # 112 tests, no API key needed
 ruff check . && ruff format --check .
+python scripts/check_examples.py  # demo PDFs regenerate to exactly the committed files
 ```
 
 Coverage: PDF extraction and page numbering; plain-text input; empty / image-only / invalid /
 oversized PDFs; valid structured AI output and all three statuses; evidence present, whitespace
 normalisation, fabricated quote rejected, wrong page rejected, missing evidence; missing API
 key, timeout, quota / API errors, invalid Gemini responses; HTTP flow including the source
-viewer and the graceful "AI unavailable" path.
+viewer and the graceful "AI unavailable" path; coverage (small / exact-limit / over-limit /
+plain text), `NOT_FOUND` → `UNCLEAR` on partial analysis, quotes outside the analyzed range, a
+regression document whose cancellation clause sits after the cutoff; delete / TTL / isolation
+between analyses; `Cache-Control` on real responses.
+
+### CI
+
+`.github/workflows/ci.yml` runs on push to `main`, pull requests and manual dispatch
+(*Run workflow*): lint → demo-asset reproducibility (`scripts/check_examples.py` regenerates the
+PDFs and fails with a readable message if Git sees any change) → tests → Docker build → container
+smoke test (`scripts/smoke.sh`: analyze, result URL, delete, 404 afterwards, headers). The
+*Regenerate demo assets* workflow commits regenerated files with `GITHUB_TOKEN`, which does not
+trigger `push` workflows, so it dispatches CI for its own commit explicitly; neither workflow
+triggers the other in a loop.
 
 ## Demo documents
 
@@ -202,6 +275,8 @@ viewer and the graceful "AI unavailable" path.
 | `examples/simple-subscription.pdf` | Fictional gym membership: $29/month, automatic monthly renewal, 14-day cancellation notice, 6-month initial commitment, data shared with payment processor and service providers. All five findings `FOUND`. |
 | `examples/ambiguous-agreement.pdf` | Fictional SaaS terms: fees "as set out in the Order Form", renewal "on terms to be agreed", cancellation "per then-current policy", no data-sharing clause. Expect `UNCLEAR` / `NOT_FOUND`, not invented answers. |
 | `examples/no-renewal-agreement.pdf` | Fictional one-time course enrollment: single $480 payment, explicitly does not renew. |
+| `examples/no-cancellation-terms.pdf` | 12 pages, fits the AI limit completely, and has no cancellation clause at all → **Full document analyzed**, *How to cancel* `NOT_FOUND`. |
+| `examples/long-subscriber-agreement.pdf` | 52 pages, exceeds the default limit: pages 1–37 are analyzed. The cancellation clause is on page 48 and the renewal clause on page 49 → **Partial analysis**, both `UNCLEAR`, while fee (p. 2), minimum term (p. 3) and data sharing (p. 4) are `FOUND`. |
 
 Regenerate with `python examples/build_examples.py` (output is byte-for-byte reproducible;
 CI checks this).
@@ -219,6 +294,15 @@ docker compose up --build
    *"cancellation must be submitted at least 14 days before the next Billing Date"* highlighted.
 3. Upload `ambiguous-agreement.pdf` → `UNCLEAR` for fees, renewal and cancellation;
    `NOT_FOUND` for data sharing.
+4. Upload `no-cancellation-terms.pdf` → **✓ Full document analyzed**, *How to cancel*:
+   Not found.
+5. Upload `long-subscriber-agreement.pdf` → **⚠ Partial analysis - Reviewed pages 1–37 of 52**,
+   *How to cancel*: Unclear, *not found in the analyzed portion*.
+6. Click **Delete analysis now** → *Analysis deleted*; the old result URL and source links now
+   return 404.
+
+Without an API key, `python scripts/demo_partial.py` runs steps 4–6 against the real app with a
+deterministic keyword stub (it only sees the pages the app sends it) and prints the checks.
 
 ## Limitations
 
@@ -227,8 +311,9 @@ docker compose up --build
   footnotes may be flattened oddly by pdfplumber).
 - Five fixed categories. Refund terms, liability, arbitration and other clauses are out of scope
   for this MVP.
-- One LLM call per document; documents beyond `MAX_AI_CHARS` (200k characters) are truncated
-  for the AI step. `MAX_PAGES` (60) and `MAX_UPLOAD_MB` (10) are enforced.
+- One LLM call per document. Documents beyond `MAX_AI_CHARS` (200k characters) are analyzed
+  only partly - the UI says so and unresolved terms become `UNCLEAR` (see *Large documents*).
+  `MAX_PAGES` (60) and `MAX_UPLOAD_MB` (10) are enforced.
 - The validator proves that a quote exists on the cited page; it cannot prove that the summary
   is a correct reading of that quote. Read the highlighted text yourself.
 - English-language prompt and UI. Other languages may work but are untested.

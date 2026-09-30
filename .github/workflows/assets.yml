@@ -3,6 +3,10 @@ name: Regenerate demo assets
 # Rebuilds the synthetic demo PDFs, the vendored htmx bundle and the README screenshots from
 # source, and commits them if anything changed. No API key is involved: the screenshots use the
 # deterministic stub provider in scripts/capture_screenshots.py.
+#
+# Commits pushed with GITHUB_TOKEN do not trigger `push` workflows. So that the bot commit on
+# main still gets a real CI result, this workflow dispatches CI explicitly after pushing.
+# No loop: CI never commits, and neither the bot push nor the dispatch re-triggers this workflow.
 
 on:
   workflow_dispatch:
@@ -14,7 +18,8 @@ on:
       - .github/workflows/assets.yml
 
 permissions:
-  contents: write
+  contents: write # commit regenerated assets
+  actions: write # dispatch CI for the bot commit
 
 concurrency:
   group: demo-assets
@@ -46,6 +51,7 @@ jobs:
       - name: Capture screenshots
         run: python scripts/capture_screenshots.py docs/screenshots
       - name: Commit changes
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -55,4 +61,10 @@ jobs:
           else
             git commit -m "Regenerate demo assets"
             git push
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Run CI on the bot commit
+        if: steps.commit.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}"
