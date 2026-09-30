@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
@@ -34,6 +34,12 @@ DISCLAIMER = (
 PRIVACY_NOTICE = (
     "Document text will be sent to an external AI provider (Google Gemini) for analysis."
 )
+UNAVAILABLE_MESSAGE = "This analysis is no longer available. It was deleted or has expired."
+
+# Responses under these paths contain analysis results or document text: never cache them.
+# Static assets are deliberately left out.
+NO_STORE_PREFIXES = ("/analyze", "/results/", "/source/")
+NO_STORE = "no-store, private"
 
 
 def create_app(
@@ -53,6 +59,15 @@ def create_app(
     app.state.settings = settings
     app.state.provider = provider
     app.state.store = ResultStore(ttl_seconds=settings.result_ttl_seconds)
+    retention_minutes = max(1, round(settings.result_ttl_seconds / 60))
+
+    @app.middleware("http")
+    async def no_store_for_sensitive_pages(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith(NO_STORE_PREFIXES):
+            response.headers["Cache-Control"] = NO_STORE
+            response.headers["Pragma"] = "no-cache"
+        return response
 
     def render(request: Request, name: str, status_code: int = 200, **ctx) -> HTMLResponse:
         base = {
@@ -61,14 +76,16 @@ def create_app(
             "privacy_notice": PRIVACY_NOTICE,
             "ai_configured": app.state.provider is not None,
             "max_upload_mb": settings.max_upload_mb,
+            "retention_minutes": retention_minutes,
             "Status": Status,
         }
         base.update(ctx)
         return templates.TemplateResponse(request, name, base, status_code=status_code)
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request) -> HTMLResponse:
-        return render(request, "index.html")
+    async def index(request: Request, deleted: str | None = None) -> HTMLResponse:
+        # `deleted` only selects which confirmation to show; it carries no user data.
+        return render(request, "index.html", deleted=deleted)
 
     @app.get("/health")
     async def health() -> dict:
@@ -100,16 +117,44 @@ def create_app(
         except extractor.DocumentError as exc:
             return render(request, error_template, status_code=422, message=exc.user_message)
 
-        result = run_analysis(document, app.state.provider)
+        result = run_analysis(document, app.state.provider, settings.max_ai_chars)
         token = app.state.store.put(result)
+        coverage = result.coverage
         logger.info(
-            "analyzed document: kind=%s pages=%d chars=%d ai_ok=%s",
+            "analyzed document: kind=%s pages=%d/%d chars=%d/%d partial=%s ai_ok=%s",
             document.source_kind,
-            document.page_count,
-            document.char_count,
+            coverage.analyzed_pages,
+            coverage.total_pages,
+            coverage.analyzed_chars,
+            coverage.total_chars,
+            coverage.partial,
             result.ok,
         )
-        return render(request, template, result=result, token=token, labels=CATEGORY_LABELS)
+        response = render(request, template, result=result, token=token, labels=CATEGORY_LABELS)
+        if is_htmx:
+            # Give the result a real URL in the address bar (GET /results/{token}).
+            response.headers["HX-Push-Url"] = f"/results/{token}"
+        return response
+
+    @app.get("/results/{token}", response_class=HTMLResponse)
+    async def result_page(request: Request, token: str) -> HTMLResponse:
+        result = app.state.store.get(token)
+        if result is None:
+            return render(
+                request,
+                "error.html",
+                status_code=404,
+                title="Analysis not available",
+                message=UNAVAILABLE_MESSAGE,
+            )
+        return render(request, "result.html", result=result, token=token, labels=CATEGORY_LABELS)
+
+    @app.post("/results/{token}/delete")
+    async def delete_result(token: str) -> RedirectResponse:
+        # Idempotent: deleting an already deleted / expired analysis is not an error.
+        deleted = app.state.store.delete(token)
+        logger.info("analysis deleted by user: existed=%s", deleted)
+        return RedirectResponse(f"/?deleted={'1' if deleted else '0'}", status_code=303)
 
     @app.get("/source/{token}/{category}", response_class=HTMLResponse)
     async def source(request: Request, token: str, category: str) -> HTMLResponse:
@@ -117,7 +162,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Unknown category")
         result = app.state.store.get(token)
         if result is None:
-            raise HTTPException(status_code=404, detail="This analysis has expired.")
+            raise HTTPException(status_code=404, detail=UNAVAILABLE_MESSAGE)
         finding = result.analysis.get(category) if result.analysis else None
         if finding is None or finding.page is None or not finding.evidence:
             raise HTTPException(status_code=404, detail="No source evidence for this finding.")

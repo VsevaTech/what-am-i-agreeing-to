@@ -1,6 +1,8 @@
 """Short-lived in-memory storage so the source viewer can show the analysed pages.
 
-Nothing is written to disk or to a database. Entries expire after a TTL.
+Nothing is written to disk or to a database. Entries expire after a TTL, or immediately when
+the user deletes them. The store is the only holder of an AnalysisResult after the response
+has been sent, so removing the entry removes the extracted text, pages, findings and quotes.
 """
 
 from __future__ import annotations
@@ -8,14 +10,21 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+from collections.abc import Callable
 
 from app.services.analysis import AnalysisResult
 
 
 class ResultStore:
-    def __init__(self, ttl_seconds: int = 1800, max_items: int = 200) -> None:
+    def __init__(
+        self,
+        ttl_seconds: int = 1800,
+        max_items: int = 200,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.ttl = ttl_seconds
         self.max_items = max_items
+        self._clock = clock
         self._items: dict[str, tuple[float, AnalysisResult]] = {}
         self._lock = threading.Lock()
 
@@ -23,7 +32,7 @@ class ResultStore:
         token = secrets.token_urlsafe(16)
         with self._lock:
             self._purge()
-            self._items[token] = (time.monotonic(), result)
+            self._items[token] = (self._clock(), result)
         return token
 
     def get(self, token: str) -> AnalysisResult | None:
@@ -32,8 +41,22 @@ class ResultStore:
             item = self._items.get(token)
         return item[1] if item else None
 
+    def delete(self, token: str) -> bool:
+        """Remove one analysis now. Returns False if it was already gone (deleted / expired)."""
+        with self._lock:
+            self._purge()
+            return self._items.pop(token, None) is not None
+
+    def __contains__(self, token: str) -> bool:
+        return self.get(token) is not None
+
+    def __len__(self) -> int:
+        with self._lock:
+            self._purge()
+            return len(self._items)
+
     def _purge(self) -> None:
-        now = time.monotonic()
+        now = self._clock()
         expired = [k for k, (t, _) in self._items.items() if now - t > self.ttl]
         for k in expired:
             del self._items[k]
