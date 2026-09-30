@@ -163,7 +163,13 @@ def test_empty_submission_returns_message(client):
 
 
 def test_demo_documents_available():
-    for name in ["simple-subscription.pdf", "ambiguous-agreement.pdf", "no-renewal-agreement.pdf"]:
+    for name in [
+        "simple-subscription.pdf",
+        "ambiguous-agreement.pdf",
+        "no-renewal-agreement.pdf",
+        "no-cancellation-terms.pdf",
+        "long-subscriber-agreement.pdf",
+    ]:
         assert (EXAMPLES / name).exists()
 
 

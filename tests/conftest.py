@@ -116,3 +116,48 @@ def client(settings: Settings, fake_provider: FakeProvider) -> TestClient:
 @pytest.fixture
 def client_without_ai(settings: Settings) -> TestClient:
     return TestClient(create_app(settings=settings, provider=None))
+
+
+# --- Honest keyword stub -----------------------------------------------------------------------
+# Behaves like a well-behaved model: it can only report what is in the text it was given, and it
+# quotes the sentence it found verbatim with the page it came from. Used by the coverage tests
+# and the partial-analysis demo, so neither needs a real AI provider.
+
+KEYWORDS: dict[str, tuple[str, ...]] = {
+    "payment": ("fee of",),
+    "automatic_renewal": ("renews automatically", "automatically renews"),
+    "cancellation": ("cancel",),
+    "commitment": ("minimum term", "initial term", "initial commitment"),
+    "data_sharing": ("personal data", "shared with", "share your personal"),
+}
+
+
+def _sentence_around(text: str, index: int) -> str:
+    start = max(text.rfind(". ", 0, index), text.rfind(".\n", 0, index))
+    start = 0 if start < 0 else start + 2
+    end = text.find(".", index)
+    end = len(text) if end < 0 else end + 1
+    return text[start:end].strip()[:500]
+
+
+class KeywordProvider:
+    name = "keyword-stub"
+
+    def __init__(self) -> None:
+        self.seen: list[ExtractedDocument] = []
+
+    def analyze(self, document: ExtractedDocument) -> AgreementAnalysis:
+        self.seen.append(document)
+        findings = {}
+        for category, words in KEYWORDS.items():
+            findings[category] = Finding(status=Status.NOT_FOUND)
+            for page in document.pages:
+                lower = page.text.lower()
+                hits = [lower.find(w) for w in words if w in lower]
+                if hits:
+                    quote = _sentence_around(page.text, min(hits))
+                    findings[category] = Finding(
+                        status=Status.FOUND, summary=quote, evidence=quote, page=page.number
+                    )
+                    break
+        return AgreementAnalysis(**findings)
